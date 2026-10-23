@@ -1,8 +1,10 @@
-![Build Status](https://img.shields.io/github/actions/workflow/status/remimikalsen/sparebank1_pengerobot/publish.yaml)
-![HACS Test](https://img.shields.io/github/actions/workflow/status/remimikalsen/sparebank1_pengerobot/hacs.yaml?label=HACS)
-![Hassfest Test](https://img.shields.io/github/actions/workflow/status/remimikalsen/sparebank1_pengerobot/hassfest.yaml?label=Hassfest)
-![License](https://img.shields.io/github/license/remimikalsen/sparebank1_pengerobot)
-![Version](https://img.shields.io/github/tag/remimikalsen/sparebank1_pengerobot)
+![HACS Custom](https://img.shields.io/badge/HACS-Custom-orange.svg)
+![License](https://img.shields.io/github/license/Chrulf/sparebank1_pengerobot)
+![Version](https://img.shields.io/github/v/tag/Chrulf/sparebank1_pengerobot)
+
+> **This is a fork** of [remimikalsen/sparebank1_pengerobot](https://github.com/remimikalsen/sparebank1_pengerobot) by [@remimikalsen](https://github.com/remimikalsen). All credit for the integration goes to him: OAuth/BankID setup, accounts, balances and transfers are his work. This fork only adds the features listed under [Fork additions](#fork-additions-) below, which I needed for tracking bills on shared accounts in Home Assistant.
+>
+> Versions are named after the upstream version they build on: `0.1.9-fork.1` is upstream 0.1.9 plus these additions. If you don't need them, use the original.
 
 # Sparebank1 Pengerobot 🏦💸
 
@@ -20,7 +22,15 @@ A Home Assistant integration that enables secure money transfers between your ow
 - 🔔 **Event Notifications** for automation integration
 - 📱 **Mobile Notifications** for transfer confirmations
 
-### New in 0.2.0
+## Fork additions 🍴
+
+Why this fork exists:
+
+- **Balances looked stale.** Upstream shows the *booked* balance, which only changes when the bank books a transaction (card purchases often the next day), so a reload or `homeassistant.update_entity` fetched new data but showed the same number. The bank app shows the *available* balance, which the API also returns.
+- **No way to refresh on demand** with feedback, and a fixed one-hour interval.
+- **No transactions.** The Sparebank1 API has them (amount, counterparty name, KID, reserved/booked), and they say exactly which bill was paid and who made a deposit, instead of guessing from balance changes.
+
+Everything is opt-in in *Configure*; with the defaults the integration behaves like upstream.
 
 - ⏱️ **Configurable update interval** (5–240 minutes, default 60). A refresh is one call to the accounts API: balances come with the account list.
 - 🔄 **Refresh now** – a *Refresh* button and a `sparebank1_pengerobot.refresh` action. It tells you when the bank is rate limiting (HTTP 429) instead of silently doing nothing. Presses within 30 seconds of each other are skipped.
@@ -51,7 +61,7 @@ Note! After HACS 2.0 the process is slightly different, just go straight to the 
 1. Ensure you have [HACS](https://hacs.xyz/) installed in Home Assistant
 2. In HACS, go to **Integrations**
 3. Click the **⋮** menu → **Custom repositories**
-4. Add this repository URL: `https://github.com/remimikalsen/sparebank1_pengerobot`
+4. Add this repository URL: `https://github.com/Chrulf/sparebank1_pengerobot` (the original is `https://github.com/remimikalsen/sparebank1_pengerobot`)
 5. Select **Integration** as the category
 6. Click **Add**
 7. Find "Sparebank1 Pengerobot" in HACS list and install it / download it
@@ -561,7 +571,7 @@ logger:
 
 ## Support 💬
 
-- 🐛 **Issues**: [GitHub Issues](https://github.com/remimikalsen/sparebank1_pengerobot/issues)
+- 🐛 **Issues**: problems with the fork additions: [this fork](https://github.com/Chrulf/sparebank1_pengerobot/issues); everything else: [upstream](https://github.com/remimikalsen/sparebank1_pengerobot/issues)
 - 📖 **Sparebank1 API**: [Developer Documentation](https://developer.sparebank1.no/)
 
 ## License 📄
