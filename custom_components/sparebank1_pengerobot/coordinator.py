@@ -3,16 +3,57 @@ import logging
 from datetime import timedelta, datetime
 from decimal import Decimal
 
+import re
+from typing import Any
+
 from aiohttp import ClientResponseError
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers import config_entry_oauth2_flow
+from homeassistant.helpers.storage import Store
+from homeassistant.util import dt as dt_util
 
 from .api import Sparebank1Client, Sparebank1APIError, Sparebank1RateLimitError
-from .const import DOMAIN, CONF_SELECTED_ACCOUNTS, OAUTH_TOKEN_URL
+from .const import (
+    DOMAIN,
+    CONF_SELECTED_ACCOUNTS,
+    CONF_UPDATE_INTERVAL,
+    CONF_FETCH_TRANSACTIONS,
+    DEFAULT_UPDATE_INTERVAL,
+    DEFAULT_FETCH_TRANSACTIONS,
+    MIN_UPDATE_INTERVAL,
+    MAX_UPDATE_INTERVAL,
+    MANUAL_REFRESH_COOLDOWN,
+    EVENT_TRANSACTION,
+    OAUTH_TOKEN_URL,
+    STORAGE_VERSION,
+    TRANSACTION_LOOKBACK_DAYS,
+    TRANSACTION_MEMORY_DAYS,
+)
+from .transactions import fingerprint, normalize
 
 _LOGGER = logging.getLogger(__name__)
+
+# How many of the latest transactions are kept in coordinator data
+RECENT_TRANSACTIONS = 25
+
+
+def _backoff_seconds(err: Exception) -> int:
+    """Seconds to wait after a 429, from Retry-After (default 1 hour)."""
+    match = re.search(r"Retry after (\d+) seconds", str(err))
+    return int(match.group(1)) if match else 3600
+
+
+def update_interval_from(entry: ConfigEntry) -> timedelta:
+    """The configured refresh interval, clamped to sane limits."""
+    minutes = entry.options.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL)
+    try:
+        minutes = int(minutes)
+    except (TypeError, ValueError):
+        minutes = DEFAULT_UPDATE_INTERVAL
+    return timedelta(minutes=max(MIN_UPDATE_INTERVAL, min(MAX_UPDATE_INTERVAL, minutes)))
 
 
 class Sparebank1Coordinator(DataUpdateCoordinator):
@@ -29,17 +70,69 @@ class Sparebank1Coordinator(DataUpdateCoordinator):
         self._rate_limit_backoff_until: datetime | None = None
 
         # Store the default update interval so we can restore it after a success
-        self._default_update_interval = timedelta(hours=1)
+        self._default_update_interval = update_interval_from(entry)
 
         # Avoid spamming the reauth repair flow when token refresh keeps failing
         self._oauth_reauth_requested: bool = False
+
+        # Transactions have their own API quota, so their own backoff
+        self._tx_backoff_until: datetime | None = None
+        # fingerprint -> date (ISO) of transactions already announced
+        self._tx_store: Store[dict[str, Any]] = Store(
+            hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}.transactions"
+        )
+        self._tx_seen: dict[str, str] | None = None
+        self._last_manual_refresh: datetime | None = None
 
         super().__init__(
             hass,
             _LOGGER,
             name=DOMAIN,
-            update_interval=timedelta(hours=1),  # Check accounts hourly
+            update_interval=self._default_update_interval,
         )
+
+    @property
+    def fetch_transactions(self) -> bool:
+        return bool(self.entry.options.get(CONF_FETCH_TRANSACTIONS, DEFAULT_FETCH_TRANSACTIONS))
+
+    @property
+    def rate_limited_until(self) -> datetime | None:
+        """When the accounts backoff ends (UTC), if one is active."""
+        if self._rate_limit_backoff_until and datetime.utcnow() < self._rate_limit_backoff_until:
+            return self._rate_limit_backoff_until
+        return None
+
+    @property
+    def transactions_rate_limited_until(self) -> datetime | None:
+        if self._tx_backoff_until and datetime.utcnow() < self._tx_backoff_until:
+            return self._tx_backoff_until
+        return None
+
+    def apply_options(self) -> None:
+        """Pick up a changed refresh interval without reloading."""
+        self._default_update_interval = update_interval_from(self.entry)
+        if self._rate_limit_backoff_until is None:
+            self.update_interval = self._default_update_interval
+
+    async def async_manual_refresh(self) -> None:
+        """Refresh now, for the refresh button/service.
+
+        Unlike async_request_refresh this isn't debounced, and it tells the
+        caller why nothing happened instead of failing silently.
+        """
+        if until := self.rate_limited_until:
+            local = dt_util.as_local(until.replace(tzinfo=dt_util.UTC))
+            raise HomeAssistantError(
+                f"Sparebank1 has rate limited this client; try again after {local:%H:%M}"
+            )
+        now = datetime.utcnow()
+        if self._last_manual_refresh and (now - self._last_manual_refresh).total_seconds() < MANUAL_REFRESH_COOLDOWN:
+            _LOGGER.debug("Manual refresh skipped – the last one was less than %ss ago", MANUAL_REFRESH_COOLDOWN)
+            return
+        self._last_manual_refresh = now
+        await self.async_refresh()
+        if not self.last_update_success:
+            raise HomeAssistantError(f"Refresh failed: {self.last_exception}")
 
     async def _ensure_client_initialized(self) -> None:
         """Ensure OAuth session and client are initialized."""
@@ -259,6 +352,27 @@ class Sparebank1Coordinator(DataUpdateCoordinator):
             else:
                 data["balance_fetch_partial"] = False
 
+            # Transactions are optional and never fail the balance update
+            previous = self.data or {}
+            data["transactions"] = previous.get("transactions", [])
+            data["transactions_last_update"] = previous.get("transactions_last_update")
+            if self.fetch_transactions:
+                try:
+                    recent = await self._async_update_transactions(accounts)
+                    if recent is not None:
+                        data["transactions"] = recent
+                        data["transactions_last_update"] = datetime.utcnow().isoformat()
+                except Sparebank1RateLimitError as err:
+                    self._tx_backoff_until = datetime.utcnow() + timedelta(seconds=_backoff_seconds(err))
+                    data["transactions_error"] = "rate_limited"
+                    _LOGGER.warning(
+                        "Transactions rate limited – skipping them until %s",
+                        self._tx_backoff_until.isoformat(),
+                    )
+                except Exception as err:  # noqa: BLE001 – non-fatal like balances
+                    data["transactions_error"] = str(err)
+                    _LOGGER.warning("Could not fetch transactions: %s", err, exc_info=True)
+
             self._oauth_reauth_requested = False
             return data
             
@@ -303,6 +417,111 @@ class Sparebank1Coordinator(DataUpdateCoordinator):
         except Exception as err:
             _LOGGER.error("Unexpected error: %s", err)
             raise UpdateFailed(f"Unexpected error: {err}")
+
+    async def _async_update_transactions(self, accounts: list[dict]) -> list[dict] | None:
+        """Fetch the last days' transactions and announce the new ones.
+
+        One API call covers all selected accounts. Returns the most recent
+        transactions (newest first), or None when skipped (backoff, no keys).
+        """
+        if self.transactions_rate_limited_until:
+            return None
+        keys = [acc["key"] for acc in accounts if acc.get("key") and acc.get("type") != "CREDITCARD"]
+        if not keys:
+            _LOGGER.debug("No account keys to fetch transactions for")
+            return None
+        if self._tx_seen is None:
+            stored = await self._tx_store.async_load() or {}
+            self._tx_seen = dict(stored.get("seen", {}))
+            first_run = not stored
+        else:
+            first_run = False
+
+        tz = dt_util.get_default_time_zone()
+        today = dt_util.now().date()
+        response = await self.client.get_transactions(
+            keys, (today - timedelta(days=TRANSACTION_LOOKBACK_DAYS)).isoformat()
+        )
+        if errors := response.get("errors"):
+            _LOGGER.warning("Transactions returned with errors: %s", errors)
+
+        by_key = {acc.get("key"): acc for acc in accounts}
+        txs = []
+        for raw in response.get("transactions", []):
+            tx = normalize(raw, tz)
+            acc = by_key.get(tx["account_key"]) or {}
+            tx["account_number"] = tx["account_number"] or acc.get("accountNumber")
+            tx["account_name"] = tx["account_name"] or acc.get("name")
+            txs.append(tx)
+        # Oldest first, so events arrive in the order things happened
+        txs.sort(key=lambda t: t["date"] or "")
+
+        new = []
+        for tx in txs:
+            fp = fingerprint(tx)
+            if fp in self._tx_seen:
+                continue
+            self._tx_seen[fp] = tx["date"] or today.isoformat()
+            new.append(tx)
+
+        for tx in new:
+            self.hass.bus.async_fire(
+                EVENT_TRANSACTION,
+                {
+                    "integration_id": self.entry.entry_id,
+                    # The first fetch after enabling covers the last days, so
+                    # consumers can tell these apart from fresh ones.
+                    "initial": first_run,
+                    **{k: v for k, v in tx.items() if k not in ("account_key", "non_unique_id")},
+                },
+            )
+        if new:
+            _LOGGER.debug("Announced %d new transaction(s)", len(new))
+
+        cutoff = (today - timedelta(days=TRANSACTION_MEMORY_DAYS)).isoformat()
+        self._tx_seen = {fp: day for fp, day in self._tx_seen.items() if day >= cutoff}
+        if new or first_run:
+            await self._tx_store.async_save({"seen": self._tx_seen})
+
+        return list(reversed(txs))[:RECENT_TRANSACTIONS]
+
+    async def async_get_transactions(
+        self, days: int, account_numbers: list[str] | None = None
+    ) -> list[dict]:
+        """Transactions for the last `days` days, newest first (one API call)."""
+        await self._ensure_client_initialized()
+        if until := self.transactions_rate_limited_until:
+            local = dt_util.as_local(until.replace(tzinfo=dt_util.UTC))
+            raise HomeAssistantError(
+                f"Sparebank1 has rate limited transactions; try again after {local:%H:%M}"
+            )
+        accounts = (self.data or {}).get("accounts", [])
+        if account_numbers:
+            accounts = [a for a in accounts if a.get("accountNumber") in account_numbers]
+        keys = [a["key"] for a in accounts if a.get("key") and a.get("type") != "CREDITCARD"]
+        if not keys:
+            raise HomeAssistantError("No accounts with an account key to fetch transactions for")
+        today = dt_util.now().date()
+        try:
+            response = await self.client.get_transactions(
+                keys, (today - timedelta(days=days)).isoformat(), today.isoformat()
+            )
+        except Sparebank1RateLimitError as err:
+            self._tx_backoff_until = datetime.utcnow() + timedelta(seconds=_backoff_seconds(err))
+            raise HomeAssistantError(f"Rate limited: {err}") from err
+        tz = dt_util.get_default_time_zone()
+        by_key = {acc.get("key"): acc for acc in accounts}
+        txs = []
+        for raw in response.get("transactions", []):
+            tx = normalize(raw, tz)
+            acc = by_key.get(tx["account_key"]) or {}
+            tx["account_number"] = tx["account_number"] or acc.get("accountNumber")
+            tx["account_name"] = tx["account_name"] or acc.get("name")
+            tx.pop("account_key", None)
+            tx.pop("non_unique_id", None)
+            txs.append(tx)
+        txs.sort(key=lambda t: t["date"] or "", reverse=True)
+        return txs
 
     async def async_transfer_money(self, from_account: str, to_account: str, amount: Decimal | str,
                                  currency: str = "NOK", description: str = "", due_date: str = None) -> dict:

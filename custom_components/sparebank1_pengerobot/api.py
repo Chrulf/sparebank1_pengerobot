@@ -11,7 +11,12 @@ import aiohttp
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.exceptions import HomeAssistantError
 
-from .const import API_BASE_URL, TRANSFER_ENDPOINT, TRANSFER_CREDITCARD_ENDPOINT
+from .const import (
+    API_BASE_URL,
+    TRANSACTIONS_ENDPOINT,
+    TRANSFER_ENDPOINT,
+    TRANSFER_CREDITCARD_ENDPOINT,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -189,6 +194,37 @@ class Sparebank1Client:  # pragma: no cover – thin wrapper
                 )
                 # Continue to next account - don't fail the entire operation
         return results
+
+    async def get_transactions(
+        self,
+        account_keys: list[str],
+        from_date: str,
+        to_date: str | None = None,
+        row_limit: int | None = None,
+    ) -> dict[str, Any]:
+        """Return transactions for one or more accounts in a single call.
+
+            GET /personal/banking/transactions?accountKey=..&accountKey=..&fromDate=YYYY-MM-DD
+
+        `account_keys` are the `key` values from the accounts list (not account
+        numbers). The response is {"transactions": [...], "errors": [...]}.
+        """
+        url = f"{API_BASE_URL}{TRANSACTIONS_ENDPOINT}"
+        params: list[tuple[str, str]] = [("accountKey", key) for key in account_keys]
+        params.append(("fromDate", from_date))
+        if to_date:
+            params.append(("toDate", to_date))
+        if row_limit:
+            params.append(("rowLimit", str(row_limit)))
+        # Both reserved (recent) and booked (historic) transactions
+        params.append(("source", "ALL"))
+        response = await self._request("GET", url, params=params)
+        _LOGGER.debug(
+            "Response from get_transactions: %d transactions, errors: %s",
+            len(response.get("transactions", [])),
+            response.get("errors"),
+        )
+        return response
 
     async def transfer_money(
         self,

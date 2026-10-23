@@ -1,6 +1,6 @@
 """Constants for the Sparebank1 Pengerobot integration."""
 
-__version__ = "0.1.9"
+__version__ = "0.2.0"
 DOMAIN = "sparebank1_pengerobot"
 INTEGRATION_NAME = "Sparebank1 Pengerobot"
 MANUFACTURER = "@remimikalsen (https://github.com/remimikalsen)"
@@ -15,6 +15,9 @@ CONF_REFRESH_TOKEN = "refresh_token"
 CONF_ACCESS_TOKEN = "access_token"
 CONF_TOKEN_EXPIRES_AT = "token_expires_at"
 CONF_TOKEN = "token"
+CONF_UPDATE_INTERVAL = "update_interval"  # minutes between automatic refreshes
+CONF_USE_AVAILABLE_BALANCE = "use_available_balance"
+CONF_FETCH_TRANSACTIONS = "fetch_transactions"
 
 
 # Sparebank1 API endpoints
@@ -24,6 +27,7 @@ OAUTH_AUTHORIZE_URL = f"{OAUTH_BASE_URL}/authorize"
 OAUTH_TOKEN_URL = f"{OAUTH_BASE_URL}/token"
 TRANSFER_ENDPOINT = "/personal/banking/transfer/debit"
 TRANSFER_CREDITCARD_ENDPOINT = "/personal/banking/transfer/creditcard/transferTo"
+TRANSACTIONS_ENDPOINT = "/personal/banking/transactions"
 
 # OAuth constants
 OAUTH_REDIRECT_URI = "https://my.home-assistant.io/redirect/oauth"
@@ -31,6 +35,10 @@ OAUTH_REDIRECT_URI = "https://my.home-assistant.io/redirect/oauth"
 # Service call constants
 SERVICE_TRANSFER_DEBIT = "transfer_debit"
 SERVICE_TRANSFER_CREDITCARD = "transfer_creditcard"
+SERVICE_REFRESH = "refresh"
+SERVICE_GET_TRANSACTIONS = "get_transactions"
+ATTR_ACCOUNT = "account"
+ATTR_DAYS = "days"
 ATTR_CURRENCY = "currency"
 ATTR_AMOUNT = "amount"
 ATTR_FROM_ACCOUNT = "from_account"
@@ -42,6 +50,8 @@ ATTR_CURRENCY_CODE = "currency_code"
 
 # Event constants
 EVENT_MONEY_TRANSFERRED = "sparebank1_pengerobot_money_transferred"
+# Fired once for every new transaction seen on a selected account
+EVENT_TRANSACTION = "sparebank1_pengerobot_transaction"
 
 # Supported currencies
 SUPPORTED_CURRENCIES = ["NOK", "EUR", "USD", "SEK", "DKK", "GBP"]
@@ -60,6 +70,24 @@ CURRENCY_RATES = {
 DEFAULT_CURRENCY = "NOK"
 DEFAULT_MAX_AMOUNT = 200  # Default maximum transfer amount in NOK
 TOKEN_REFRESH_THRESHOLD = 300  # Refresh token 5 minutes before expiry
+
+# Each Sparebank1 API (accounts, transactions, ...) allows about 60 calls per
+# hour per client. A refresh costs one accounts call, plus one transactions
+# call when transactions are enabled, so 5 minutes leaves plenty of room for
+# manual refreshes and transfers.
+DEFAULT_UPDATE_INTERVAL = 60
+MIN_UPDATE_INTERVAL = 5
+MAX_UPDATE_INTERVAL = 240
+# Manual refreshes closer together than this are skipped (quota protection)
+MANUAL_REFRESH_COOLDOWN = 30  # seconds
+DEFAULT_USE_AVAILABLE_BALANCE = False
+DEFAULT_FETCH_TRANSACTIONS = False
+# How far back each refresh looks for new transactions
+TRANSACTION_LOOKBACK_DAYS = 7
+# Transactions remembered as already announced, to avoid duplicate events
+TRANSACTION_MEMORY_DAYS = 45
+MAX_SERVICE_DAYS = 365
+STORAGE_VERSION = 1
 
 # Validation constants
 NORWEGIAN_ACCOUNT_NUMBER_LENGTH = 11

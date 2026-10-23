@@ -7,7 +7,13 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.const import CONF_NAME
 import logging
 
-from .const import DOMAIN, INTEGRATION_NAME, MANUFACTURER
+from .const import (
+    DOMAIN,
+    INTEGRATION_NAME,
+    MANUFACTURER,
+    CONF_USE_AVAILABLE_BALANCE,
+    DEFAULT_USE_AVAILABLE_BALANCE,
+)
 from .coordinator import Sparebank1Coordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -164,7 +170,24 @@ class Sparebank1AccountSensor(BaseSparebank1Sensor):
                 attributes["balance_fetch_errors"] = balance_errors[:3]  # Limit to first 3 errors
         else:
             attributes["balance_fetch_status"] = "success"
-        
+
+        # Why a refresh may not happen right now
+        coordinator = self.coordinator
+        attributes["update_interval_minutes"] = int(coordinator._default_update_interval.total_seconds() // 60)
+        if until := coordinator.rate_limited_until:
+            attributes["rate_limited_until"] = until.isoformat() + "Z"
+        if coordinator.fetch_transactions:
+            attributes["transactions_last_update"] = self.coordinator.data.get("transactions_last_update")
+            if until := coordinator.transactions_rate_limited_until:
+                attributes["transactions_rate_limited_until"] = until.isoformat() + "Z"
+            if error := self.coordinator.data.get("transactions_error"):
+                attributes["transactions_error"] = error
+            # The latest few, for a quick look in the UI
+            attributes["latest_transactions"] = [
+                {k: tx.get(k) for k in ("date", "amount", "description", "remote_name", "status", "account_name")}
+                for tx in self.coordinator.data.get("transactions", [])[:5]
+            ]
+
         return attributes
 
 
@@ -254,6 +277,13 @@ class Sparebank1AccountBalanceSensor(BaseSparebank1Sensor):
         return super().available
 
     @property
+    def _use_available(self) -> bool:
+        """Show the available balance (like the bank app) instead of the booked one."""
+        return bool(
+            self.entry.options.get(CONF_USE_AVAILABLE_BALANCE, DEFAULT_USE_AVAILABLE_BALANCE)
+        )
+
+    @property
     def native_value(self):
         """Return the account balance."""
         if not self.coordinator.data:
@@ -281,7 +311,10 @@ class Sparebank1AccountBalanceSensor(BaseSparebank1Sensor):
                 [acc.get("AccountId") for acc in accounts]
             )
             return None
-            
+
+        if self._use_available and isinstance(account.get("availableBalance"), (int, float)):
+            return float(account["availableBalance"])
+
         balance = account.get("balance")
         if not balance:
             _LOGGER.debug(
@@ -364,5 +397,17 @@ class Sparebank1AccountBalanceSensor(BaseSparebank1Sensor):
                 self.account_number,
                 account.get("creditCardAccountID")
             )
-        
+
+        # Booked balance changes when the bank books a transaction (card
+        # purchases often the next day); available is what the bank app shows.
+        booked = account.get("balance")
+        if isinstance(booked, dict):
+            try:
+                attributes["booked_balance"] = float(booked.get("amount"))
+            except (TypeError, ValueError):
+                pass
+        if isinstance(account.get("availableBalance"), (int, float)):
+            attributes["available_balance"] = float(account["availableBalance"])
+        attributes["balance_type"] = "available" if self._use_available else "booked"
+
         return attributes

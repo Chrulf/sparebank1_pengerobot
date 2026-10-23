@@ -4,7 +4,7 @@ import voluptuous as vol
 from decimal import Decimal
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.helpers import config_validation as cv
 from homeassistant.exceptions import HomeAssistantError
@@ -24,6 +24,11 @@ from .const import (
     ATTR_DUE_DATE,
     ATTR_DEVICE_ID,
     ATTR_CURRENCY_CODE,
+    ATTR_ACCOUNT,
+    ATTR_DAYS,
+    SERVICE_REFRESH,
+    SERVICE_GET_TRANSACTIONS,
+    MAX_SERVICE_DAYS,
 
     EVENT_MONEY_TRANSFERRED,
     DEFAULT_CURRENCY,
@@ -44,7 +49,7 @@ from .coordinator import Sparebank1Coordinator
 from .api import Sparebank1APIError
 
 _LOGGER = logging.getLogger(__name__)
-PLATFORMS = [Platform.SENSOR]
+PLATFORMS = [Platform.SENSOR, Platform.BUTTON]
 # OAuth2 integrations don't need YAML config support
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
@@ -120,9 +125,92 @@ def get_transfer_creditcard_schema(hass: HomeAssistant) -> vol.Schema:
     )
 
 
+REFRESH_SCHEMA = vol.Schema({vol.Optional(ATTR_DEVICE_ID): cv.string})
+
+GET_TRANSACTIONS_SCHEMA = vol.Schema(
+    {
+        vol.Optional(ATTR_DEVICE_ID): cv.string,
+        vol.Optional(ATTR_ACCOUNT): vol.All(cv.ensure_list, [cv.entity_id]),
+        vol.Optional(ATTR_DAYS, default=30): vol.All(
+            vol.Coerce(int), vol.Range(min=1, max=MAX_SERVICE_DAYS)
+        ),
+    }
+)
+
+
+def _coordinators(hass: HomeAssistant) -> dict[str, Sparebank1Coordinator]:
+    return {
+        entry_id: data["coordinator"]
+        for entry_id, data in hass.data.get(DOMAIN, {}).items()
+        if isinstance(data, dict) and "coordinator" in data
+    }
+
+
+def _entry_id_for_device(hass: HomeAssistant, device_id: str) -> str:
+    device = device_registry.async_get(hass).async_get(device_id)
+    if not device:
+        raise HomeAssistantError(f"Device {device_id} not found")
+    for identifier in device.identifiers:
+        if identifier[0] == DOMAIN:
+            return identifier[1]
+    raise HomeAssistantError(f"No integration entry found for device {device_id}")
+
+
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up the Sparebank1 Pengerobot component."""
     hass.data[DOMAIN] = {}
+
+    async def async_handle_refresh(call: ServiceCall) -> None:
+        """Refresh one entry (device_id) or all of them now."""
+        coordinators = _coordinators(hass)
+        if device_id := call.data.get(ATTR_DEVICE_ID):
+            entry_id = _entry_id_for_device(hass, device_id)
+            if entry_id not in coordinators:
+                raise HomeAssistantError(f"Integration entry {entry_id} is not loaded")
+            coordinators = {entry_id: coordinators[entry_id]}
+        for coordinator in coordinators.values():
+            await coordinator.async_manual_refresh()
+
+    async def async_handle_get_transactions(call: ServiceCall) -> ServiceResponse:
+        """Return the last days' transactions (one API call per entry)."""
+        coordinators = _coordinators(hass)
+        account_numbers: list[str] = []
+        entity_entries: set[str] = set()
+        ent_reg = entity_registry.async_get(hass)
+        for entity_id in call.data.get(ATTR_ACCOUNT, []):
+            state = hass.states.get(entity_id)
+            number = state.attributes.get("account_number") if state else None
+            if not number:
+                raise HomeAssistantError(f"{entity_id} is not a Sparebank1 account sensor")
+            account_numbers.append(number)
+            if (reg := ent_reg.async_get(entity_id)) and reg.config_entry_id:
+                entity_entries.add(reg.config_entry_id)
+        if device_id := call.data.get(ATTR_DEVICE_ID):
+            wanted = {_entry_id_for_device(hass, device_id)}
+        elif entity_entries:
+            wanted = entity_entries
+        else:
+            wanted = set(coordinators)
+        transactions: list[dict] = []
+        for entry_id in wanted:
+            if entry_id not in coordinators:
+                raise HomeAssistantError(f"Integration entry {entry_id} is not loaded")
+            transactions += await coordinators[entry_id].async_get_transactions(
+                call.data[ATTR_DAYS], account_numbers or None
+            )
+        transactions.sort(key=lambda t: t.get("date") or "", reverse=True)
+        return {"transactions": transactions}
+
+    hass.services.async_register(
+        DOMAIN, SERVICE_REFRESH, async_handle_refresh, schema=REFRESH_SCHEMA
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_GET_TRANSACTIONS,
+        async_handle_get_transactions,
+        schema=GET_TRANSACTIONS_SCHEMA,
+        supports_response=SupportsResponse.ONLY,
+    )
     return True
 
 
@@ -608,6 +696,7 @@ async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> Non
 
             # Request a data refresh to apply any selection changes
             if coordinator:
+                coordinator.apply_options()
                 await coordinator.async_request_refresh()
     except Exception as err:
         _LOGGER.error("Error handling options update for entry_id=%s: %s", entry.entry_id, err)    

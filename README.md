@@ -20,6 +20,15 @@ A Home Assistant integration that enables secure money transfers between your ow
 - 🔔 **Event Notifications** for automation integration
 - 📱 **Mobile Notifications** for transfer confirmations
 
+### New in 0.2.0
+
+- ⏱️ **Configurable update interval** (5–240 minutes, default 60). A refresh is one call to the accounts API: balances come with the account list.
+- 🔄 **Refresh now** – a *Refresh* button and a `sparebank1_pengerobot.refresh` action. It tells you when the bank is rate limiting (HTTP 429) instead of silently doing nothing. Presses within 30 seconds of each other are skipped.
+- 💰 **Available balance** – each account sensor now has `available_balance` and `booked_balance` attributes. The booked balance (the default sensor value, as before) only changes when the bank books a transaction, which for card purchases is often the next day; turn on *Use available balance* to show what the bank app shows.
+- 🧾 **Transactions** (opt-in) – with *Fetch transactions* on, each refresh fetches the last 7 days for all selected accounts in a single call (the transactions API has its own ~60/hour quota) and fires a `sparebank1_pengerobot_transaction` event for every new one. The `sparebank1_pengerobot.get_transactions` action returns up to a year of transactions as a response.
+
+Event data: `date`, `amount` (negative = out), `currency`, `description`, `raw_description`, `remote_name`, `remote_account`, `kid`, `message`, `status` (`PENDING`/`BOOKED`), `type_code`, `type_text`, `merchant`, `account_number`, `account_name`, `id` (the API's id, not stable between sessions), `integration_id` and `initial` (true for the first fetch after enabling, which covers the last 7 days). Each transaction is announced once, also across restarts; a reserved card purchase is not announced again when it gets booked.
+
 ## Prerequisites 📋
 
 Before installing this integration, you'll need to create an OAuth client with Sparebank1:

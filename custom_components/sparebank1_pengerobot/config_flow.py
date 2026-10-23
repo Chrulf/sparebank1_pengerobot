@@ -14,7 +14,14 @@ from homeassistant import config_entries
 from homeassistant.helpers.config_entry_oauth2_flow import (
     AbstractOAuth2FlowHandler, async_get_implementations
 )
-from homeassistant.helpers.selector import SelectSelector, SelectSelectorConfig, SelectOptionDict
+from homeassistant.helpers.selector import (
+    NumberSelector,
+    NumberSelectorConfig,
+    NumberSelectorMode,
+    SelectOptionDict,
+    SelectSelector,
+    SelectSelectorConfig,
+)
 
 from homeassistant.helpers import config_entry_oauth2_flow
 from .api import Sparebank1Client
@@ -30,6 +37,14 @@ from .const import (
     CONF_DEFAULT_CURRENCY,
     CONF_MAX_AMOUNT,
     CONF_SELECTED_ACCOUNTS,
+    CONF_UPDATE_INTERVAL,
+    CONF_USE_AVAILABLE_BALANCE,
+    CONF_FETCH_TRANSACTIONS,
+    DEFAULT_UPDATE_INTERVAL,
+    DEFAULT_USE_AVAILABLE_BALANCE,
+    DEFAULT_FETCH_TRANSACTIONS,
+    MIN_UPDATE_INTERVAL,
+    MAX_UPDATE_INTERVAL,
     DEFAULT_CURRENCY,
     DEFAULT_MAX_AMOUNT,
     SUPPORTED_CURRENCIES,
@@ -645,6 +660,26 @@ class Sparebank1OptionsFlow(config_entries.OptionsFlow):
                     CONF_MAX_AMOUNT, data.get(CONF_MAX_AMOUNT, DEFAULT_MAX_AMOUNT)
                 ),
             ): vol.Coerce(int),
+            vol.Optional(
+                CONF_UPDATE_INTERVAL,
+                default=options.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL),
+            ): NumberSelector(
+                NumberSelectorConfig(
+                    min=MIN_UPDATE_INTERVAL,
+                    max=MAX_UPDATE_INTERVAL,
+                    step=1,
+                    unit_of_measurement="min",
+                    mode=NumberSelectorMode.BOX,
+                )
+            ),
+            vol.Optional(
+                CONF_USE_AVAILABLE_BALANCE,
+                default=options.get(CONF_USE_AVAILABLE_BALANCE, DEFAULT_USE_AVAILABLE_BALANCE),
+            ): bool,
+            vol.Optional(
+                CONF_FETCH_TRANSACTIONS,
+                default=options.get(CONF_FETCH_TRANSACTIONS, DEFAULT_FETCH_TRANSACTIONS),
+            ): bool,
         }
 
         # Add account selector if available

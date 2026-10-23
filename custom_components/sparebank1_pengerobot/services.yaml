@@ -102,3 +102,47 @@ transfer_creditcard:
       required: false
       selector:
         date:
+
+refresh:
+  name: "Refresh"
+  description: "Fetch balances (and transactions, if enabled) from Sparebank1 now. Fails with a message while the bank is rate limiting this client."
+  fields:
+    device_id:
+      name: "Device"
+      description: "Sparebank1 device to refresh (all of them if left out)"
+      required: false
+      selector:
+        device:
+          integration: sparebank1_pengerobot
+
+get_transactions:
+  name: "Get transactions"
+  description: "Return the transactions of the last days (one API call). Uses the separate transactions quota of about 60 calls per hour."
+  fields:
+    device_id:
+      name: "Device"
+      description: "Sparebank1 device to use (all of them if left out)"
+      required: false
+      selector:
+        device:
+          integration: sparebank1_pengerobot
+    account:
+      name: "Accounts"
+      description: "Account sensors to include (all selected accounts if left out)"
+      required: false
+      selector:
+        entity:
+          integration: sparebank1_pengerobot
+          domain: sensor
+          device_class: monetary
+          multiple: true
+    days:
+      name: "Days"
+      description: "How many days back to look"
+      required: false
+      default: 30
+      selector:
+        number:
+          min: 1
+          max: 365
+          mode: box

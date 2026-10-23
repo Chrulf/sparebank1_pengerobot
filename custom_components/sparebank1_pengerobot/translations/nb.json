@@ -68,12 +68,18 @@
         "data": {
           "default_currency": "Standardvaluta",
           "max_amount": "Maksimalt overføringsbeløp",
-          "selected_accounts": "Velg kontoer å følge"
+          "selected_accounts": "Velg kontoer å følge",
+          "update_interval": "Oppdateringsintervall",
+          "use_available_balance": "Bruk disponibelt beløp",
+          "fetch_transactions": "Hent transaksjoner"
         },
         "data_description": {
           "default_currency": "Valutakode (f.eks. NOK, EUR). Valg av andre valutaer enn NOK kan medføre ekstra overføringskostnader.",
           "max_amount": "Maksimalt beløp for pengeoverføringer i valgt valuta.",
-          "selected_accounts": "Velg en eller flere kontoer å overvåke for saldoer"
+          "selected_accounts": "Velg en eller flere kontoer å overvåke for saldoer",
+          "update_interval": "Minutter mellom automatiske oppdateringer (5–240). Hver oppdatering bruker ett av ca. 60 kall i timen, pluss ett transaksjonskall når det er slått på.",
+          "use_available_balance": "Vis disponibelt beløp (det banken viser, inkludert reserverte kortkjøp) i stedet for bokført saldo, som kan henge etter en dag.",
+          "fetch_transactions": "Hent de siste 7 dagenes transaksjoner ved hver oppdatering og send en sparebank1_pengerobot_transaction-hendelse for hver nye. Bruker en egen kvote for transaksjoner."
         }
       }
     }

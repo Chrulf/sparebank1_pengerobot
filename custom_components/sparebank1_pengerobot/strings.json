@@ -69,12 +69,18 @@
         "data": {
           "default_currency": "Default Currency",
           "max_amount": "Maximum Transfer Amount",
-          "selected_accounts": "Select accounts to track"
+          "selected_accounts": "Select accounts to track",
+          "update_interval": "Update interval",
+          "use_available_balance": "Use available balance",
+          "fetch_transactions": "Fetch transactions"
         },
         "data_description": {
           "default_currency": "Currency code (e.g., NOK, EUR). Choosing other currencies than NOK may incur additional transfer costs.",
           "max_amount": "Maximum amount for money transfers in the default currency.",
-          "selected_accounts": "Choose one or more accounts to monitor for balances"
+          "selected_accounts": "Choose one or more accounts to monitor for balances",
+          "update_interval": "Minutes between automatic refreshes (5–240). Each refresh uses one of about 60 calls per hour, plus one transactions call when enabled.",
+          "use_available_balance": "Show the available balance (what the bank app shows, including reserved card purchases) instead of the booked balance, which can lag a day.",
+          "fetch_transactions": "Fetch the last 7 days of transactions on each refresh and fire a sparebank1_pengerobot_transaction event for each new one. Uses the separate transactions quota."
         }
       }
     }
