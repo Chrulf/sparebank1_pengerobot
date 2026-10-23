@@ -36,8 +36,8 @@ from .transactions import fingerprint, normalize
 
 _LOGGER = logging.getLogger(__name__)
 
-# How many of the latest transactions are kept in coordinator data
-RECENT_TRANSACTIONS = 25
+# Cap on transactions kept in coordinator data (the last 7 days, all accounts)
+RECENT_TRANSACTIONS = 200
 
 
 def _backoff_seconds(err: Exception) -> int:
@@ -82,6 +82,8 @@ class Sparebank1Coordinator(DataUpdateCoordinator):
             hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}.transactions"
         )
         self._tx_seen: dict[str, str] | None = None
+        # fingerprints announced while still reserved (PENDING)
+        self._tx_pending: set[str] = set()
         self._last_manual_refresh: datetime | None = None
 
         super().__init__(
@@ -433,6 +435,7 @@ class Sparebank1Coordinator(DataUpdateCoordinator):
         if self._tx_seen is None:
             stored = await self._tx_store.async_load() or {}
             self._tx_seen = dict(stored.get("seen", {}))
+            self._tx_pending = set(stored.get("pending", []))
             first_run = not stored
         else:
             first_run = False
@@ -456,15 +459,21 @@ class Sparebank1Coordinator(DataUpdateCoordinator):
         # Oldest first, so events arrive in the order things happened
         txs.sort(key=lambda t: t["date"] or "")
 
-        new = []
+        # (transaction, previously_pending): new ones, and reserved ones now booked
+        announce: list[tuple[dict, bool]] = []
         for tx in txs:
             fp = fingerprint(tx)
             if fp in self._tx_seen:
+                if fp in self._tx_pending and tx["status"] != "PENDING":
+                    self._tx_pending.discard(fp)
+                    announce.append((tx, True))
                 continue
             self._tx_seen[fp] = tx["date"] or today.isoformat()
-            new.append(tx)
+            if tx["status"] == "PENDING":
+                self._tx_pending.add(fp)
+            announce.append((tx, False))
 
-        for tx in new:
+        for tx, previously_pending in announce:
             self.hass.bus.async_fire(
                 EVENT_TRANSACTION,
                 {
@@ -472,16 +481,22 @@ class Sparebank1Coordinator(DataUpdateCoordinator):
                     # The first fetch after enabling covers the last days, so
                     # consumers can tell these apart from fresh ones.
                     "initial": first_run,
+                    # Announced before as reserved (PENDING), now booked
+                    "previously_pending": previously_pending,
                     **{k: v for k, v in tx.items() if k not in ("account_key", "non_unique_id")},
                 },
             )
-        if new:
-            _LOGGER.debug("Announced %d new transaction(s)", len(new))
+        if announce:
+            _LOGGER.debug("Announced %d transaction(s)", len(announce))
 
         cutoff = (today - timedelta(days=TRANSACTION_MEMORY_DAYS)).isoformat()
         self._tx_seen = {fp: day for fp, day in self._tx_seen.items() if day >= cutoff}
-        if new or first_run:
-            await self._tx_store.async_save({"seen": self._tx_seen})
+        # Reservations that never got booked (cancelled) are dropped with them
+        self._tx_pending &= set(self._tx_seen)
+        if announce or first_run:
+            await self._tx_store.async_save(
+                {"seen": self._tx_seen, "pending": sorted(self._tx_pending)}
+            )
 
         return list(reversed(txs))[:RECENT_TRANSACTIONS]
 
@@ -518,7 +533,6 @@ class Sparebank1Coordinator(DataUpdateCoordinator):
             tx["account_number"] = tx["account_number"] or acc.get("accountNumber")
             tx["account_name"] = tx["account_name"] or acc.get("name")
             tx.pop("account_key", None)
-            tx.pop("non_unique_id", None)
             txs.append(tx)
         txs.sort(key=lambda t: t["date"] or "", reverse=True)
         return txs

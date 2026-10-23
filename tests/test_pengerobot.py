@@ -117,6 +117,17 @@ async def test_transactions_announced_once(hass: HomeAssistant, freezer) -> None
     assert events[2].data["description"] == "Rema 1000"
     assert events[2].data["status"] == "PENDING"
     assert events[2].data["initial"] is False
+    assert events[2].data["previously_pending"] is False
+    assert events[0].data["previously_pending"] is False
+    coordinator.data = await coordinator._async_update_data()
+
+    # The reservation gets booked: announced once more, flagged
+    client.transactions[2] = _raw("2026-11-12", -89, "Rema 1000")
+    await coordinator._async_update_data()
+    await coordinator._async_update_data()
+    await hass.async_block_till_done()
+    assert len(events) == 4
+    assert (events[3].data["status"], events[3].data["previously_pending"]) == ("BOOKED", True)
 
     # Remembered across restarts
     _, again = await _coordinator(hass, fetch_transactions=True)
@@ -125,7 +136,7 @@ async def test_transactions_announced_once(hass: HomeAssistant, freezer) -> None
     again.client.transactions = list(client.transactions)
     await again._async_update_data()
     await hass.async_block_till_done()
-    assert len(events) == 3
+    assert len(events) == 4
 
 
 async def test_transactions_off_and_rate_limited(hass: HomeAssistant, freezer) -> None:
@@ -198,6 +209,32 @@ async def test_available_balance_option(hass: HomeAssistant, freezer) -> None:
     hass.config_entries.async_update_entry(entry, options={"use_available_balance": True})
     assert sensor.native_value == 1200.0
     assert sensor.extra_state_attributes["balance_type"] == "available"
+    assert "latest_transactions" not in sensor.extra_state_attributes
+
+
+async def test_latest_transactions_per_account(hass: HomeAssistant, freezer) -> None:
+    from custom_components.sparebank1_pengerobot.sensor import (
+        Sparebank1AccountBalanceSensor,
+        Sparebank1AccountSensor,
+    )
+
+    freezer.move_to("2026-11-12 08:00:00+01:00")
+    entry, coordinator = await _coordinator(hass, fetch_transactions=True)
+    coordinator.client.transactions = [
+        _raw(f"2026-11-{day:02d}", -day, f"Kjøp {day}") for day in range(5, 12)
+    ] + [_raw("2026-11-11", -1, "Annen konto", accountKey="KEY-X", accountNumber="11111111111")]
+    coordinator.data = await coordinator._async_update_data()
+    regning = Sparebank1AccountBalanceSensor(coordinator, entry, coordinator.data["accounts"][0], 0)
+    latest = regning.extra_state_attributes["latest_transactions"]
+    # This account only, newest first, five of them
+    assert [t["description"] for t in latest] == ["Kjøp 11", "Kjøp 10", "Kjøp 9", "Kjøp 8", "Kjøp 7"]
+    assert set(latest[0]) == {"date", "amount", "description", "remote_name", "status"}
+    # Kept out of the recorder
+    assert "latest_transactions" in regning._unrecorded_attributes
+    # The overview sensor no longer carries a combined list
+    status = Sparebank1AccountSensor(coordinator, entry)
+    assert "latest_transactions" not in status.extra_state_attributes
+    assert status.extra_state_attributes["transactions_last_update"]
 
 
 async def test_services(hass: HomeAssistant, freezer) -> None:
@@ -218,6 +255,9 @@ async def test_services(hass: HomeAssistant, freezer) -> None:
         blocking=True, return_response=True,
     )
     assert [t["description"] for t in result["transactions"]] == ["Rema 1000", "Telenor"]
+    # non_unique_id is included for troubleshooting
+    assert "non_unique_id" in result["transactions"][0]
+    assert "account_key" not in result["transactions"][0]
     assert coordinator.client.tx_calls[-1] == (("KEY-R",), "2026-10-13", "2026-11-12")
 
     with pytest.raises(HomeAssistantError):

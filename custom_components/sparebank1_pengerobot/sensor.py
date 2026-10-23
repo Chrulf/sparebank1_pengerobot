@@ -18,6 +18,9 @@ from .coordinator import Sparebank1Coordinator
 
 _LOGGER = logging.getLogger(__name__)
 
+# Transactions shown per account sensor
+LATEST_TRANSACTIONS = 5
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -182,18 +185,16 @@ class Sparebank1AccountSensor(BaseSparebank1Sensor):
                 attributes["transactions_rate_limited_until"] = until.isoformat() + "Z"
             if error := self.coordinator.data.get("transactions_error"):
                 attributes["transactions_error"] = error
-            # The latest few, for a quick look in the UI
-            attributes["latest_transactions"] = [
-                {k: tx.get(k) for k in ("date", "amount", "description", "remote_name", "status", "account_name")}
-                for tx in self.coordinator.data.get("transactions", [])[:5]
-            ]
 
         return attributes
 
 
 class Sparebank1AccountBalanceSensor(BaseSparebank1Sensor):
     """Sensor representing individual Sparebank1 account balance."""
-    
+
+    # Shown in the UI, but not stored in history on every balance change
+    _unrecorded_attributes = frozenset({"latest_transactions"})
+
     def __init__(self, coordinator: Sparebank1Coordinator, entry: ConfigEntry, account: dict, account_index: int):
         """Initialize the account balance sensor."""
         super().__init__(coordinator, entry)
@@ -409,5 +410,14 @@ class Sparebank1AccountBalanceSensor(BaseSparebank1Sensor):
         if isinstance(account.get("availableBalance"), (int, float)):
             attributes["available_balance"] = float(account["availableBalance"])
         attributes["balance_type"] = "available" if self._use_available else "booked"
+
+        # This account's latest transactions (from the shared fetch, no extra calls)
+        if self.coordinator.fetch_transactions:
+            number = account.get("accountNumber")
+            attributes["latest_transactions"] = [
+                {k: tx.get(k) for k in ("date", "amount", "description", "remote_name", "status")}
+                for tx in self.coordinator.data.get("transactions", [])
+                if number and tx.get("account_number") == number
+            ][:LATEST_TRANSACTIONS]
 
         return attributes
